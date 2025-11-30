@@ -1,0 +1,7 @@
+datasets
+rank-bm25
+transformers
+accelerate
+sentencepiece
+termcolor
+torch

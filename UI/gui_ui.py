@@ -1,0 +1,349 @@
+import os
+import sys
+import time
+import tkinter as tk
+from tkinter import ttk, scrolledtext, messagebox
+from pathlib import Path
+
+# 导入项目核心模块
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from main import rag_pipeline, clear_conversation
+from retrieval import bm25 as bm25_mod
+from retrieval import static_embed as static_mod
+from generator import rag_llm as rag_llm_mod
+
+
+class RAGGUI:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("RAG System")
+        self.root.geometry("1200x700")
+
+        # 配置变量
+        self.retrieval_method = tk.StringVar(value="bm25")
+        self.mode = tk.StringVar(value="basic")
+        self.model_choice = tk.StringVar(value="Qwen/Qwen2.5-0.5B-Instruct")
+        self.hybrid_alpha = tk.DoubleVar(value=0.5)
+
+        # 初始化UI组件
+        self._create_widgets()
+
+        # 状态变量
+        self.initialized = False
+
+    def _create_widgets(self):
+        # 顶部配置区域
+        config_frame = ttk.LabelFrame(self.root, text="Configuration")
+        config_frame.pack(fill=tk.X, padx=10, pady=5)
+
+        # 检索方法选择
+        ttk.Label(config_frame, text="Retrieval Method:").grid(row=0, column=0, padx=5, pady=5, sticky=tk.W)
+        methods = ["bm25", "static", "dense", "idense", "hybrid", "multivector"]
+        method_combo = ttk.Combobox(config_frame, textvariable=self.retrieval_method, values=methods, state="readonly",
+                                    width=10)
+        method_combo.grid(row=0, column=1, padx=5, pady=5)
+
+        # 混合检索权重 (仅hybrid模式)
+        ttk.Label(config_frame, text="Hybrid Alpha (0.0-1.0):").grid(row=0, column=2, padx=5, pady=5, sticky=tk.W)
+        self.alpha_entry = ttk.Entry(config_frame, textvariable=self.hybrid_alpha, width=8)
+        self.alpha_entry.grid(row=0, column=3, padx=5, pady=5)
+
+        # 模式选择
+        ttk.Label(config_frame, text="Mode:").grid(row=0, column=4, padx=5, pady=5, sticky=tk.W)
+        modes = ["basic", "multi_turn", "agentic"]
+        mode_combo = ttk.Combobox(config_frame, textvariable=self.mode, values=modes, state="readonly", width=10)
+        mode_combo.grid(row=0, column=5, padx=5, pady=5)
+
+        # 模型选择
+        ttk.Label(config_frame, text="Model:").grid(row=0, column=6, padx=5, pady=5, sticky=tk.W)
+        model_entry = ttk.Entry(config_frame, textvariable=self.model_choice, width=30)
+        model_entry.grid(row=0, column=7, padx=5, pady=5)
+
+        # 初始化按钮
+        init_btn = ttk.Button(config_frame, text="Initialize", command=self.initialize_system)
+        init_btn.grid(row=0, column=8, padx=10, pady=5)
+
+        # 主内容区域 - 三栏布局
+        main_frame = ttk.Frame(self.root)
+        main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+
+        # 左侧区域：配置信息和最终答案
+        left_frame = ttk.LabelFrame(main_frame, text="System Info & Final Answer")
+        left_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 5))
+        self.left_area = scrolledtext.ScrolledText(left_frame, wrap=tk.WORD, state=tk.DISABLED)
+        self.left_area.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+
+        # 中间区域：中间工作流程
+        middle_frame = ttk.LabelFrame(main_frame, text="Intermediate Workflow")
+        middle_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(5, 5))
+        self.middle_area = scrolledtext.ScrolledText(middle_frame, wrap=tk.WORD, state=tk.DISABLED)
+        self.middle_area.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+
+        # 右侧区域：检索到的文档
+        right_frame = ttk.LabelFrame(main_frame, text="Retrieved Documents")
+        right_frame.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=(5, 0))
+        self.right_area = scrolledtext.ScrolledText(right_frame, wrap=tk.WORD, state=tk.DISABLED)
+        self.right_area.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+
+        # 输入区域
+        input_frame = ttk.Frame(self.root)
+        input_frame.pack(fill=tk.X, padx=10, pady=5)
+
+        self.user_input = ttk.Entry(input_frame)
+        self.user_input.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 10))
+        self.user_input.bind("<Return>", self.process_input)
+
+        send_btn = ttk.Button(input_frame, text="Send", command=self.process_input)
+        send_btn.pack(side=tk.RIGHT)
+
+        # 状态栏
+        self.status_var = tk.StringVar(value="Ready. Please click 'Initialize' to start.")
+        status_bar = ttk.Label(self.root, textvariable=self.status_var, relief=tk.SUNKEN, anchor=tk.W)
+        status_bar.pack(side=tk.BOTTOM, fill=tk.X)
+
+    def _log_to_area(self, area, message, color=None):
+        """向指定区域添加消息"""
+        area.config(state=tk.NORMAL)
+        if color:
+            # 简单的颜色标记，实际显示效果取决于配置
+            area.insert(tk.END, f"[{color}]{message}[/{color}]\n")
+        else:
+            area.insert(tk.END, f"{message}\n")
+        area.see(tk.END)
+        area.config(state=tk.DISABLED)
+
+    def log_system(self, message, color=None):
+        """在左侧区域添加系统信息和答案"""
+        self._log_to_area(self.left_area, message, color)
+
+    def log_intermediate(self, message, color=None):
+        """在中间区域添加中间工作流程信息"""
+        self._log_to_area(self.middle_area, message, color)
+
+    def log_documents(self, message, color=None):
+        """在右侧区域添加检索文档信息"""
+        self._log_to_area(self.right_area, message, color)
+
+    def update_status(self, message):
+        """更新状态栏消息"""
+        self.status_var.set(message)
+        self.root.update_idletasks()
+
+    def initialize_system(self):
+        """初始化系统组件"""
+        # 清空所有区域
+        for area in [self.left_area, self.middle_area, self.right_area]:
+            area.config(state=tk.NORMAL)
+            area.delete(1.0, tk.END)
+            area.config(state=tk.DISABLED)
+
+        self.log_system("=" * 70)
+        self.log_system("        🧠  Retrieval-Augmented Generation System (RAG)        ")
+        self.log_system("=" * 70)
+
+        self.update_status("Initializing system...")
+
+        # 获取配置
+        method = self.retrieval_method.get()
+        mode = self.mode.get()
+        model_choice = self.model_choice.get() or None
+        hybrid_alpha = self.hybrid_alpha.get()
+        hybrid_alpha = max(0.0, min(1.0, hybrid_alpha))
+
+        # 显示配置信息
+        self.log_system("\n⚙️ Configuration:")
+        self.log_system(f"  Retriever: {method}")
+        self.log_system(f"  Mode: {mode}")
+        self.log_system(f"  Model: {model_choice or 'default'}")
+        if method == "hybrid":
+            self.log_system(f"  Hybrid Alpha: {hybrid_alpha}")
+
+        # 初始化模型
+        try:
+            rag_llm_mod.init_model(model_choice)
+            self.log_system("✅ Model initialized successfully")
+        except Exception as e:
+            self.log_system(f"⚠️ Warning: model init failed: {e}", "red")
+
+        # 初始化检索器
+        try:
+            if method == "bm25":
+                idx_path = str(bm25_mod.HF_CACHE_DIR / "bm25_idx.pkl") if hasattr(bm25_mod, "HF_CACHE_DIR") else None
+                bm25_mod.init(index_path=idx_path)
+            elif method == "static":
+                static_mod.ensure_index()
+                static_mod.load_index()
+            elif method == "dense":
+                from retrieval import dense as dense_mod
+                dense_mod.ensure_index()
+                dense_mod.load_index()
+            elif method == "idense":
+                from retrieval import instruction_dense as idense_mod
+                idense_mod.ensure_index()
+                idense_mod.load_index()
+            elif method == "hybrid":
+                idx_path = str(bm25_mod.HF_CACHE_DIR / "bm25_idx.pkl") if hasattr(bm25_mod, "HF_CACHE_DIR") else None
+                bm25_mod.init(index_path=idx_path)
+                static_mod.ensure_index()
+                static_mod.load_index()
+            elif method == "multivector":
+                from retrieval import dense as dense_mod
+                dense_mod.ensure_index()
+                dense_mod.load_index()
+
+            self.log_system(f"✅ {method} retriever initialized successfully")
+        except Exception as e:
+            self.log_system(f"⚠️ Warning during initialization: {e}", "red")
+            self.log_system("You can still continue, but the selected retriever may fall back to another.")
+
+        self.initialized = True
+        self.update_status("Initialization complete. You may now enter questions.")
+        self.log_system("\nYou may now enter questions.")
+        self.log_system("Type '/help' for available commands.")
+        self.user_input.focus()
+
+    def print_retrieved_docs(self, docs, max_display=5):
+        """在右侧区域显示检索到的文档"""
+        self.log_documents("\n--- Retrieved Documents ---")
+        for i, d in enumerate(docs[:max_display]):
+            self.log_documents(f"\nDoc #{i + 1}")
+            self.log_documents(f"[ID] {d.get('id', 'N/A')} | Score: {d.get('score', 0):.4f}")
+            text = d.get('text', '')[:350]
+            self.log_documents(text + ("..." if len(d.get('text', '')) > 350 else ""))
+            self.log_documents("-" * 50)
+        if len(docs) > max_display:
+            self.log_documents(f"... and {len(docs) - max_display} more documents")
+
+    def print_intermediate(self, steps, mode="basic"):
+        """在中间区域打印中间步骤"""
+        self.log_intermediate("\n▶ Intermediate Workflow")
+
+        if mode == "agentic" and "agent_steps" in steps:
+            self.log_intermediate("🤖 Agentic Workflow Steps:")
+            for step in steps.get("agent_steps", []):
+                self.log_intermediate(f"\n  Step {step['step']} [{step['action'].upper()}]")
+                self.log_intermediate(f"    💭 Thought: {step['thought']}")
+                self.log_intermediate(f"    📥 Input: {step['input'][:80]}...")
+                self.log_intermediate(f"    👁️ Observation: {step['observation'][:80]}...")
+
+            if "self_check" in steps:
+                sc = steps["self_check"]
+                verdict = "✅ PASSED" if sc.get("final_verdict") else "❌ FAILED"
+                self.log_intermediate(f"\n  Self-Check: {verdict}")
+                self.log_intermediate(f"    Reason: {sc.get('reason', 'N/A')}")
+
+        elif mode == "multi_turn" and "query_rewriting" in steps:
+            self.log_intermediate("🔄 Multi-Turn Conversation:")
+            qr = steps.get("query_rewriting", {})
+            self.log_intermediate(f"  Original: {qr.get('original_question', 'N/A')}")
+            self.log_intermediate(f"  Rewritten: {qr.get('rewritten_query', 'N/A')}")
+            self.log_intermediate(f"  Has Coreference: {qr.get('has_coreference', False)}")
+            self.log_intermediate(f"  Conversation Turns: {steps.get('conversation_turns', 1)}")
+            if steps.get("extracted_entities"):
+                self.log_intermediate(f"  Entities: {steps['extracted_entities']}")
+
+        else:
+            for k, v in steps.items():
+                if k not in ["agent_steps", "query_rewriting", "self_check"]:
+                    v_str = str(v)
+                    if len(v_str) > 100:
+                        v_str = v_str[:100] + "..."
+                    self.log_intermediate(f"• {k}: {v_str}")
+
+    def print_help(self):
+        """在左侧区域显示帮助信息"""
+        self.log_system("\n📚 Available Commands:")
+        self.log_system("  /mode basic     - Switch to basic single-turn RAG")
+        self.log_system("  /mode multi     - Switch to multi-turn conversation (Feature A)")
+        self.log_system("  /mode agentic   - Switch to agentic workflow (Feature B)")
+        self.log_system("  /clear          - Clear conversation history")
+
+
+    def process_input(self, event=None):
+        """处理用户输入"""
+        if not self.initialized:
+            messagebox.showwarning("Not Initialized", "Please click 'Initialize' first.")
+            return
+
+        user_query = self.user_input.get().strip()
+        if not user_query:
+            return
+
+        self.user_input.delete(0, tk.END)
+        self.log_system(f"\n> User: {user_query}")
+
+        # 处理命令
+        if user_query.lower() == "/help":
+            self.print_help()
+            return
+        if user_query.lower().startswith("/mode "):
+            new_mode = user_query.split(" ", 1)[1].strip().lower()
+            mode_map = {"basic": "basic", "multi": "multi_turn", "agentic": "agentic"}
+            if new_mode in mode_map:
+                self.mode.set(mode_map[new_mode])
+                self.log_system(f"🔄 Mode switched to: {mode_map[new_mode]}")
+                if new_mode == "multi":
+                    clear_conversation()
+                    self.log_system("  (Conversation history cleared for new multi-turn session)")
+            else:
+                self.log_system("❌ Invalid mode. Use 'basic', 'multi', or 'agentic'.", "red")
+            return
+        if user_query.lower() == "/clear":
+            clear_conversation()
+            self.log_system("🗑️ Conversation history cleared.")
+            return
+
+        # 处理正常查询
+        self.update_status("Processing query...")
+        try:
+            method = self.retrieval_method.get()
+            mode = self.mode.get()
+            hybrid_alpha = self.hybrid_alpha.get()
+            hybrid_alpha = max(0.0, min(1.0, hybrid_alpha))  # 确保权重在0-1范围
+
+            # 核心修复：区分hybrid模式和其他模式处理参数
+            if method == "hybrid":
+                # hybrid模式：使用 BM25 + instruction-dense 的混合检索，传入alpha参数
+                from retrieval.hybrid import hybrid_bm25_instruction_retrieve
+                from generator.rag_llm import generate_answer
+                # 混合检索
+                docs = hybrid_bm25_instruction_retrieve(user_query, topk=10, alpha=hybrid_alpha, mode="score")
+                # 生成答案
+                answer, intermediate = generate_answer(user_query, docs)
+                # 构造统一结果格式
+                result = {
+                    "final_answer": answer,
+                    "intermediate_steps": intermediate,
+                    "retrieved_docs": docs
+                }
+            else:
+                # 非hybrid模式：调用rag_pipeline，不传递hybrid_alpha参数
+                result = rag_pipeline(
+                    query=user_query,
+                    method=method,
+                    mode=mode
+                )
+
+            # 显示最终答案
+            self.log_system("\n📝 Final Answer:")
+            self.log_system(result.get("final_answer", "No answer generated."))
+
+            # 显示中间步骤
+            self.print_intermediate(result.get("intermediate_steps", {}), self.mode.get())
+
+            # 显示检索到的文档
+            self.print_retrieved_docs(result.get("retrieved_docs", []))
+
+        except Exception as e:
+            self.log_system(f"❌ Error processing query: {str(e)}", "red")
+        finally:
+            self.update_status("Ready. Enter your next question.")
+
+
+if __name__ == "__main__":
+    root = tk.Tk()
+    app = RAGGUI(root)
+    root.mainloop()

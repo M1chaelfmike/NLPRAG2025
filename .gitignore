@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Virtual env
+.env/
+.venv/
+venv/
+ENV/
+
+# HF / model caches
+hf_cache/
+nltk_data/
+xet/
+logs/
+
+# VSCode
+.vscode/
