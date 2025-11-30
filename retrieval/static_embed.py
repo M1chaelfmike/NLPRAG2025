@@ -34,10 +34,7 @@ def load_glove(glove_path: str) -> dict:
 
 
 def ensure_glove(glove_path: str):
-    """Ensure GloVe file exists at glove_path. If not, try to download via kagglehub.
 
-    Returns the path to the glove file if available, otherwise raises FileNotFoundError with instructions.
-    """
     glove_path = pathlib.Path(glove_path)
     if glove_path.exists():
         return str(glove_path)
@@ -52,14 +49,13 @@ def ensure_glove(glove_path: str):
             "Or install kagglehub (pip install kagglehub) and ensure you have Kaggle credentials configured.")
 
     try:
-        # dataset_download should return a local path where files were downloaded
+
         path = kagglehub.dataset_download("thanakomsn/glove6b300dtxt")
-        # The dataset may contain multiple files; find glove.6B.300d.txt inside
         p = pathlib.Path(path)
         candidates = list(p.rglob("glove*.txt"))
         if not candidates:
             raise FileNotFoundError(f"Downloaded dataset but no glove txt found under {p}")
-        # pick the first candidate that matches expected name, else first candidate
+
         chosen = None
         for c in candidates:
             if c.name == glove_path.name:
@@ -68,7 +64,6 @@ def ensure_glove(glove_path: str):
         if chosen is None:
             chosen = candidates[0]
 
-        # copy to desired location
         os.replace(str(chosen), str(glove_path))
         print(f"Downloaded GloVe to {glove_path}")
         return str(glove_path)
@@ -78,13 +73,9 @@ def ensure_glove(glove_path: str):
 
 
 def ensure_index(glove_path: str = None):
-    """Ensure FAISS index exists; if not, try to build it (which will download GloVe if needed).
-
-    Returns None. Raises FileNotFoundError if building fails.
-    """
     if os.path.exists(FAISS_INDEX_PATH):
         return
-    # Attempt to build index (this will call ensure_glove internally)
+
     try:
         build_index(glove_path=glove_path)
     except Exception as e:
@@ -118,26 +109,20 @@ def doc_to_vec(text: str, glove: dict, idf_map: dict, dim: int) -> np.ndarray:
 
 
 def build_index(glove_path: str = None):
-    """Build FAISS index over the collection using IDF-weighted GloVe vectors.
-    Saves index, vectors and mappings to `hf_cache/embeddings/`.
-    """
     import faiss
 
     glove_path = glove_path or str(GLOVE_DEFAULT)
-    # ensure glove exists or attempt to download
+
     try:
         glove_path = ensure_glove(glove_path)
     except FileNotFoundError:
-        # re-raise with same message
         raise
 
     print("Loading GloVe vectors (this may take a while)...")
     glove = load_glove(glove_path)
     dim = next(iter(glove.values())).shape[0]
 
-    # Ensure BM25 module has loaded the collection (corpus/ids)
     if not getattr(bm25_mod, "corpus", None) or not getattr(bm25_mod, "ids", None):
-        # try to init BM25 (will load dataset and optionally load/save index if configured)
         try:
             bm25_idx_path = None
             if hasattr(bm25_mod, "HF_CACHE_DIR"):
@@ -159,19 +144,16 @@ def build_index(glove_path: str = None):
     for i, text in enumerate(tqdm(corpus)):
         vectors[i] = doc_to_vec(text, glove, idf_map, dim)
 
-    # normalize
     norms = np.linalg.norm(vectors, axis=1, keepdims=True)
     norms[norms == 0] = 1.0
     vectors = vectors / norms
 
-    # build index
     print("Building FAISS index...")
     index = faiss.IndexFlatIP(dim)
     index.add(vectors)
     faiss.write_index(index, str(FAISS_INDEX_PATH))
     np.save(str(VECTORS_NPY), vectors)
 
-    # save id mapping (list index -> doc id)
     with open(DOC_MAP_JSON, "w", encoding="utf8") as f:
         json.dump(ids, f, ensure_ascii=False)
 
@@ -186,12 +168,11 @@ _GLOVE = None
 
 
 def load_index(glove_path: str = None):
-    """Load FAISS index and associated files into memory (lazy)."""
     global _INDEX, _VECTORS, _DOC_IDS, _IDF, _GLOVE
     if _INDEX is not None:
         return
     import faiss
-    # ensure index exists (will attempt to build if missing)
+
     ensure_index(glove_path=glove_path)
 
     _INDEX = faiss.read_index(str(FAISS_INDEX_PATH))
@@ -206,10 +187,8 @@ def load_index(glove_path: str = None):
         glove_path = ensure_glove(glove_path)
         _GLOVE = load_glove(glove_path)
     except FileNotFoundError:
-        # If glove not available, continue with empty glove dict (query vectors will be zeros)
         print(f"Warning: GloVe not available at {glove_path}; static embedding queries will be empty.")
         _GLOVE = {}
-    # Ensure BM25 corpus is available for mapping index positions -> texts
     if not getattr(bm25_mod, "corpus", None):
         try:
             bm25_idx_path = None
@@ -233,14 +212,9 @@ def query_to_vec(query: str) -> np.ndarray:
 
 
 def embed_retrieve(query: str, topk: int = 10) -> List[dict]:
-    """Return topk documents using static-embedding FAISS index.
-
-    Returns list of dicts with keys: id, score, text
-    """
     try:
         load_index()
     except FileNotFoundError as e:
-        # Fall back to BM25 if static index is not available / cannot be built
         print(f"Static index not available: {e}. Falling back to BM25.")
         return bm25_mod.bm25_retrieve(query, topk=topk)
 

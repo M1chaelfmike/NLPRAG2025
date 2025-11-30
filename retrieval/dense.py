@@ -34,14 +34,11 @@ def _lazy_model(model_name: str = "all-mpnet-base-v2"):
 
 
 def _ensure_passages():
-    """Ensure bm25 corpus is available and split into passages."""
     global _PASSAGES
     if _PASSAGES is not None:
         return
-    # lazy import bm25 module to get corpus
     from retrieval import bm25 as bm25_mod
     if not getattr(bm25_mod, "corpus", None):
-        # initialize bm25 (will load dataset)
         try:
             idx_path = None
             if hasattr(bm25_mod, "HF_CACHE_DIR"):
@@ -56,7 +53,6 @@ def _ensure_passages():
         raise RuntimeError("No corpus available to build dense passages. Ensure bm25 corpus is initialized.")
 
     passages = []
-    # simple whitespace-based passage splitter
     for doc_idx, text in enumerate(corpus):
         doc_id = ids[doc_idx] if ids else f"doc-{doc_idx}"
         words = text.split()
@@ -79,22 +75,18 @@ def _ensure_passages():
 
 
 def build_index(model_name: str = "sentence-transformers/all-mpnet-base-v2", batch_size: int = 256):
-    """Build dense passage vectors and FAISS index.
-
-    Saves `passage_vectors.npy`, `passage_map.json` and FAISS index file.
-    """
     _lazy_model(model_name)
     _ensure_passages()
     global _PASSAGES
 
     texts = [p["text"] for p in _PASSAGES]
-    # encode in batches with a single overall tqdm and show remaining batches
+
     model = _MODEL
     vectors = []
     total_batches = math.ceil(len(texts) / batch_size) if batch_size > 0 else 0
     pbar = tqdm(range(0, len(texts), batch_size), total=total_batches, desc="Encoding passages")
     for idx, i in enumerate(pbar):
-        # update description to show remaining batches
+
         remaining = max(total_batches - idx - 1, 0)
         try:
             pbar.set_description(f"Encoding passages (remaining {remaining})")
@@ -106,12 +98,11 @@ def build_index(model_name: str = "sentence-transformers/all-mpnet-base-v2", bat
     pbar.close()
     vectors = np.vstack(vectors).astype(np.float32)
 
-    # normalize to unit vectors for cosine via inner product
     norms = np.linalg.norm(vectors, axis=1, keepdims=True)
     norms[norms == 0] = 1.0
     vectors = vectors / norms
 
-    # build faiss index
+
     try:
         import faiss
     except Exception:
@@ -120,12 +111,10 @@ def build_index(model_name: str = "sentence-transformers/all-mpnet-base-v2", bat
     dim = vectors.shape[1]
     index = faiss.IndexFlatIP(dim)
     index.add(vectors)
-    
-    # 确保目录存在
+
     FAISS_INDEX.parent.mkdir(parents=True, exist_ok=True)
     
-    # faiss 对中文路径支持不佳，直接保存到项目内英文子目录
-    # 使用相对于C盘根目录的英文路径
+
     import shutil
     import uuid
     ascii_temp_dir = pathlib.Path("C:/faiss_temp_nlp")
@@ -137,16 +126,16 @@ def build_index(model_name: str = "sentence-transformers/all-mpnet-base-v2", bat
     faiss.write_index(index, str(tmp_idx))
     np.save(str(tmp_npy), vectors)
     
-    # save map
+
     with open(tmp_map, "w", encoding="utf8") as f:
         json.dump(_PASSAGES, f, ensure_ascii=False)
     
-    # 复制到目标位置
+
     shutil.copy(str(tmp_idx), str(FAISS_INDEX))
     shutil.copy(str(tmp_npy), str(VECTORS_NPY))
     shutil.copy(str(tmp_map), str(PASSAGE_MAP))
     
-    # 清理临时文件
+
     try:
         tmp_idx.unlink()
         tmp_npy.unlink()
@@ -159,7 +148,6 @@ def build_index(model_name: str = "sentence-transformers/all-mpnet-base-v2", bat
 
 
 def load_index(model_name: str = "sentence-transformers/all-mpnet-base-v2"):
-    """Load FAISS index, passage map and model lazily."""
     global _INDEX, _PASSAGES, _MODEL
     if _INDEX is not None:
         return
@@ -172,7 +160,6 @@ def load_index(model_name: str = "sentence-transformers/all-mpnet-base-v2"):
     if not os.path.exists(FAISS_INDEX):
         raise FileNotFoundError(f"FAISS index not found at {FAISS_INDEX}; run build_index() first")
 
-    # faiss 对中文路径支持不佳，复制到纯英文临时目录读取
     import shutil
     ascii_temp_dir = pathlib.Path("C:/faiss_temp_nlp")
     ascii_temp_dir.mkdir(parents=True, exist_ok=True)
@@ -195,10 +182,7 @@ def ensure_index(model_name: str = "sentence-transformers/all-mpnet-base-v2"):
 
 
 def dense_retrieve(query: str, topk: int = 10, model_name: str = "sentence-transformers/all-mpnet-base-v2") -> List[Dict]:
-    """Encode query and return topk passages in same format as other retrievers.
 
-    Returns list of dicts: {id: doc_id, passage_id, score, text}
-    """
     load_index(model_name=model_name)
     global _INDEX, _PASSAGES, _MODEL
     if _INDEX is None:
@@ -206,7 +190,7 @@ def dense_retrieve(query: str, topk: int = 10, model_name: str = "sentence-trans
 
     qvec = _MODEL.encode([query], convert_to_numpy=True)
     qvec = qvec.astype(np.float32)
-    # normalize
+
     qnorm = np.linalg.norm(qvec, axis=1, keepdims=True)
     qnorm[qnorm == 0] = 1.0
     qvec = qvec / qnorm

@@ -9,7 +9,7 @@ from tqdm import tqdm
 # Lazy globals
 _MODEL = None
 _INDEX = None
-_PASSAGES = None  # list of dicts: {pid, doc_id, text}
+_PASSAGES = None
 
 PROJECT_ROOT = pathlib.Path(__file__).resolve().parents[1]
 EMB_DIR = PROJECT_ROOT / "hf_cache" / "embeddings" / "dense_instruction"
@@ -32,7 +32,6 @@ def _lazy_model(model_name: str = "intfloat/e5-base-v2"):
 
 
 def _ensure_passages():
-    """Reuse BM25 corpus and split into passages (same as dense retriever)."""
     global _PASSAGES
     if _PASSAGES is not None:
         return
@@ -84,12 +83,12 @@ def _encode_texts(texts: List[str], batch_size: int = 256) -> np.ndarray:
 
 
 def build_index(model_name: str = "intfloat/e5-base-v2", batch_size: int = 256):
-    """Build instruction-based dense passage vectors and FAISS index."""
+
     _lazy_model(model_name)
     _ensure_passages()
     global _PASSAGES
 
-    # E5 类模型推荐加指令前缀
+
     texts = [f"passage: {p['text']}" for p in _PASSAGES]
     vectors = _encode_texts(texts, batch_size=batch_size)
 
@@ -102,10 +101,10 @@ def build_index(model_name: str = "intfloat/e5-base-v2", batch_size: int = 256):
     index = faiss.IndexFlatIP(dim)
     index.add(vectors)
     
-    # 确保目录存在
+
     FAISS_INDEX.parent.mkdir(parents=True, exist_ok=True)
     
-    # 使用临时文件避免中文路径问题
+
     import tempfile
     import shutil
     with tempfile.NamedTemporaryFile(delete=False, suffix='.idx') as tmp:
@@ -122,7 +121,6 @@ def build_index(model_name: str = "intfloat/e5-base-v2", batch_size: int = 256):
 
 
 def load_index(model_name: str = "intfloat/e5-base-v2"):
-    """Load FAISS index, passage map and model lazily for instruction-dense retrieval."""
     global _INDEX, _PASSAGES, _MODEL
     if _INDEX is not None:
         return
@@ -150,16 +148,11 @@ def ensure_index(model_name: str = "intfloat/e5-base-v2"):
 
 
 def instruction_dense_retrieve(query: str, topk: int = 10, model_name: str = "intfloat/e5-base-v2") -> List[Dict]:
-    """Instruction-based dense retrieval.
-
-    Returns list of dicts: {id: doc_id, passage_id, score, text}
-    """
     load_index(model_name=model_name)
     global _INDEX, _PASSAGES, _MODEL
     if _INDEX is None:
         raise RuntimeError("Index not loaded; call load_index() or ensure_index() first")
 
-    # 对 query 加上指令前缀
     qtext = f"query: {query}"
     qvec = _MODEL.encode([qtext], convert_to_numpy=True, normalize_embeddings=True)
     qvec = qvec.astype(np.float32)
