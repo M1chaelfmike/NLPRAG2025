@@ -28,7 +28,7 @@ We implement a diverse set of retrieval algorithms to handle different query typ
 
 1. **Clone the repository**
    ```bash
-   git clone <repository_url>
+   git clone https://github.com/M1chaelfmike/NLPRAG2025
    cd NLPRAG2025-master1
    ```
 
